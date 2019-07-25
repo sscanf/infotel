@@ -1,0 +1,735 @@
+;
+;                             INFOTEL2
+;                            ==========                    30/10/96 
+;
+;             USANDO EL MC 68H705, ESTE PROGRAMA ANALIZA CUALQUIER CAMBIO
+;EN LAS ENTRADAS OPTO-ACOPLADAS E INFORMA VIA TELEFONO CON EL MESAJE DE VOZ
+;PREGRABADO CORRESPONDIENTE A LA ENTRADA QUE HA PRESENTADO ACTIVIDAD.
+;PUEDE ALMACENAR TRES N§ DE TEL. ALTERNATIVOS POR CADA ENTRADA
+;
+;-----------------------------------------------------------------------------
+;                         DEFINICION DEL BYTE DE FLAGS
+;
+;   BIT 0       EL INT. LO PONE CUANDO HAN DESCOLGADO DEL TELEF. REMOTO
+;               Y LO MANTIENE SIEMPRE QUE ESTE DESCOLGADO
+;   BIT 1       A UNO MIENTRAS ESTA EN MARCHA EL BUCLE DE TIEMPO DE TIMER
+;   BIT 2       
+;   BIT 3       INDIC.SEG.PULS.DE ORDEN, LA PRIMERA A SIDO UN CERO
+;   BIT 4       INDICA DEMANDA DE ESTATUS DE TODO LO HAY MEMORIZADO
+;   BIT 5       MIENTRAS ESTA EN MARCHA "BUC" EN EL TIMER  (MARCADO)
+;   BIT 6       LO PONE EL INT. CUANDO DESCUELGAN CON EL "*"
+;   BIT 7
+;-----------------------------------------------------------------------------
+;
+; DEFINICION DE LOS PORTS
+
+PORTA   EQU 00H
+PORTB   EQU 01H
+PORTC   EQU 02H
+PORTD   EQU 03H
+PCA     EQU 04H
+PCB     EQU 05H
+PCC     EQU 06H
+MR      EQU 0AH                 ;MISCELLANEOUS REGISTER
+
+; POSICION DE LOS BUFFERS
+
+ENTRY   EQU 80H                 ;INICIO DEL PROGRAMA.
+TDR     EQU 08H
+TCR     EQU 09H
+
+                                ORG 10H
+WORD    RES 1                 ;MEMORIZA RELES PARA COMPARAR CAMBIOS
+WORD1   RES 1                 ;ES LA MASCARA DE LOS RELES QUE YA SE HAN AVISADO
+WORD2   RES 1                 ;MEMORIZA LOS CAMBIOS
+CONT    RES 1                 ;CONTADOR PARA BUCLES EN EL TIMER
+CONT1   RES 1                 ;CONTADOR PARA BUCLES CORTOS DEL MARCADO (TIMER)
+CONT2   RES 1                 ;BUCLE EN INT.
+CONT3   RES 1                 ;  "
+CONT4   RES 1                 ;TIEMPO PARA QUE DESCUELGEN
+CONT5   RES 1                 ;TIME OUT, DE MIENTRAS DESCUELGAN
+CONTIM  RES 1                 ;CONTADOR DEL INTERRUP DEL TIMER
+SAVA    RES 1                 ;GUARDA 'A' EN MORSE
+SAVA1   RES 1                 ;GUARDA 'A' EN BUCLIN  
+SAVA3   RES 1                 ;GUARDA 'A' EN EL INTERRUP
+SAVX    RES 1                 ;GUARDA 'X' EN BUCLIN
+MEMORI  RES 1                 ;MEMORIZA LOS BITS QUESE HAN ACTIVADO
+FLAGS   RES 1                 ;DEFINIDO ARRIBA
+DIGIT   RES 1
+CONLLA  RES 1                 ;CONTADOR DE INSIS. DE LLAM. AL MISMO NUM.
+PUNTER  RES 1                 ;PUNTERO PARA COJER DE MEM. EL NUMERO DE TELEF.
+;
+;
+                PSCT              ;SET PROGRAM SEGMENT
+                ORG ENTRY
+;ßßßßßßßßßßßßßßßßÝINICIALIZACION DE LOS BUFERS Ýßßßßßßßßßßßßßßßß
+
+        SEI
+        RSP             ;RESET STACK POINTER
+        CLRA
+        CLRX
+CERO:
+        STA TDR,X
+        INCX
+        CPX #$7A
+        BNE CERO
+
+;ßßßßßßßßßßßßßßßßÝINICIALIZACION DE LOS PORTS Ýßßßßßßßßßßßßßßßß
+
+        LDA #$FF
+        STA PCC                       ;PORTC TODO SALIDAS
+        LDA #$FF
+        STA PCB                       ;PORTB TODO SALIDAS
+        LDA #$EB
+        STA PCA                       ;PORTA COMO (SSSESESS)
+        CLRA
+        STA PCC                       ;ENTRADAS PARA LEER PALABRA
+        STA PORTB
+        LDA #$01
+        STA PORTA                       ;TELEFONO COLGADO
+;
+;
+;ßßßßßßßßßßßßßßßßÝINICIALIZACION DEL MISCELLANEUS REGISTERÝßßßßßßßßßßßßßßßßßßß
+
+        BSET 6,MR                     ;INT2 NO PERMITIDO
+        JSR PRETIM
+        LDA #$FF
+        STA WORD1                     ;MASCARA DE RELES A CERO
+        LDA #$03
+        STA CONLLA                    ;CARGA EL NUM DE ISIST. DE LLAMADAS
+        BSET 1,PORTA                  ;PITO SIN ACTIVAR
+        CLI
+        ;
+        BRA MAIN
+STAD:
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        LDA MEMORI              ;MIRA SI HAY ALGO MEMORIZADO
+        BNE MAI
+        LDA #$03                ;SI ESTA A CERO HARA TRES RAYAS
+        STA CONT3
+STAD1:
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BCLR 1,PORTA            ;SI ESTA A CERO HARA CINCO RAYAS
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        BSET 1,PORTA
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        DEC CONT3
+        BNE STAD1
+        BCLR 4,FLAGS
+        BRA MAIN
+;
+MA1:
+        JSR BUC
+        BRSET 1,PORTC,MA0       ;SI AHORA NO HAY TONO, FALSA ALARMA
+        BSET 0,PORTA            ;CUELGA
+        BCLR 0,FLAGS
+        BCLR 6,FLAGS            ;QUITA EL DESCOLGDO DEL INT.
+        BRA MA0
+;
+LLAM:
+        BRSET 0,FLAGS,MA0        ;SI YA ESTA DESCOLGADO NADA
+        JSR LLAMAN
+        BCC MA0                  ;SI VIENE SIN CARRY, ESTA DESCOLGADO
+
+;
+MAIN:
+        BRSET 4,FLAGS,STAD      ;ME PIDEN QUE DE EL ESTATUS
+        BRCLR 0,PORTC,LLAM      ;PODRIAN ESTAR LLAMANDO
+MA0:
+        BRCLR 1,PORTC,MA1       ;MIRA SI HAY TONO,(PI-PI-PI-PI)
+MAIN0:
+
+        LDA PORTD
+        BEQ MAIN
+        AND WORD1
+        BEQ MAIN
+MAI:
+        STA WORD2
+;MAIN1:
+        BRSET 0,WORD2,REL1      ;VA AMIRAR QUE RELE HA SIDO
+MAIN2:
+        BRSET 1,WORD2,REL2
+MAIN3:
+        BRSET 2,WORD2,REL3
+MAIN4:
+        BRSET 3,WORD2,REL4
+MAIN5:
+        BRSET 4,WORD2,REL5
+MAIN6:
+        BRSET 5,WORD2,REL6
+MAIN7:
+        BRSET 6,WORD2,R7
+MAIN8:
+        BRSET 7,WORD2,R8
+        BCLR 4,FLAGS            ;RESSET DEL FLAG DE STATUS
+        BRA MAIN
+R7:
+        JMP REL7
+R8:
+        JMP REL8
+;
+REL1;
+        BSET 0,MEMORI           ;MEMORIZA EL EVENTO
+        JSR MARCA
+        BCS INSI1               ;SI NO HA PODIDO CONTACTAR VOLVERA A INSISTIR
+        LDA #$01
+        JSR MORSE
+        BRA MAIN2
+INSI1:
+        JSR BUCLE
+        BRA REL1
+;
+REL2;
+        BSET 1,MEMORI           ;MEMORIZA EL EVENTO
+        JSR MARCA
+        BCS INSI2               ;SI NO HA PODIDO CONTACTAR VOLVERA A INSISTIR
+        LDA #$02
+        JSR MORSE               ;INFORMARA EN MORSE QUE ES EL RELE 2
+        BRA MAIN3
+INSI2:
+        JSR BUCLE
+        BRA REL2
+;
+REL3;
+        BSET 2,MEMORI           ;MEMORIZA EL EVENTO
+        JSR MARCA
+        BCS INSI3               ;SI NO HA PODIDO CONTACTAR VOLVERA A INSISTIR
+        LDA #$03
+        JSR MORSE               ;INFORMARA EN MORSE QUE ES EL RELE 3
+        BRA MAIN4
+INSI3:
+        JSR BUCLE
+        BRA REL3
+;
+REL4;
+        BSET 3,MEMORI           ;MEMORIZA EL EVENTO
+        JSR MARCA
+        BCS INSI4               ;SI NO HA PODIDO CONTACTAR VOLVERA A INSISTIR
+        LDA #$04
+        JSR MORSE               ;INFORMARA EN MORSE QUE ES EL RELE 4
+        BRA MAIN5
+INSI4:
+        JSR BUCLE
+        BRA REL4
+;
+REL5;
+        BSET 4,MEMORI           ;MEMORIZA EL EVENTO
+        JSR MARCA
+        BCS INSI5               ;SI NO HA PODIDO CONTACTAR VOLVERA A INSISTIR
+        LDA #$05
+        JSR MORSE               ;INFORMARA EN MORSE QUE ES EL RELE 5
+        BRA MAIN6
+INSI5:
+        JSR BUCLE
+        BRA REL5
+;
+REL6;
+        BSET 5,MEMORI           ;MEMORIZA EL EVENTO
+        JSR MARCA
+        BCS INSI6               ;SI NO HA PODIDO CONTACTAR VOLVERA A INSISTIR
+        LDA #$06
+        JSR MORSE               ;INFORMARA EN MORSE QUE ES EL RELE 6
+        JMP MAIN7
+INSI6:
+        JSR BUCLE
+        BRA REL6
+;
+REL7;
+        BSET 6,MEMORI           ;MEMORIZA EL EVENTO
+        JSR MARCA
+        BCS INSI7               ;SI NO HA PODIDO CONTACTAR VOLVERA A INSISTIR
+        LDA #$07
+        JSR MORSE               ;INFORMARA EN MORSE QUE ES EL RELE 7
+        JMP MAIN8
+INSI7:
+        JSR BUCLE
+        BRA REL7
+;
+REL8;
+        BSET 7,MEMORI           ;MEMORIZA EL EVENTO
+        JSR MARCA
+        BCS INSI8               ;SI NO HA PODIDO CONTACTAR VOLVERA A INSISTIR
+        LDA #$08
+        JSR MORSE               ;INFORMARA EN MORSE QUE ES EL RELE 8
+        BCLR 4,FLAGS            ;RESSET DEL FLAG DE STATUS
+        JMP MAIN
+INSI8:
+        JSR BUCLE
+        BRA REL8
+;
+;
+;==============================================================================
+;
+;                              **** SUPRUTINAS ****
+;==============================================================================
+;
+MORSE:
+        STA SAVA                ;NUMERO DE RELE A INFORMAR
+        CMP #$05
+        BPL RAYA                ;A PARTIR DEL 5 VA UNA RAYA AL PRINCIPIO
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+MOR:
+        BCLR 1,PORTA            ;PONE PITO
+        JSR BUC
+        JSR BUC
+        JSR BUC
+        BSET 1,PORTA
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        DEC SAVA
+        BNE MOR
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        RTS
+RAYA:
+        SBC #$04                ;LE RESTA 4
+        STA SAVA
+        BCLR 1,PORTA
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        BSET 1,PORTA
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        DEC SAVA
+        BNE MOR
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        RTS
+        
+FI22:
+        JMP FI2
+MARCA:
+        BCLR 0,PORTA            ;DESCUELGA
+        LDA #$13                ;TIEMPO PARA EL BUCLE, PARA EL TONO
+        STA CONT
+        BSET 1,FLAGS           ;FLAG QUE PONE EL BUCLE DEL TIMER EN MARCHA
+MARCA1:
+        BRCLR 1,PORTC,TONO     ;MIRA EL TONO DE LINEA ANTES DE MARCAR
+        BRSET 1,FLAGS,MARCA1   ;ESPERA QUE SE LE PONGA EL TONO DE LINEA
+MAR0:
+        BSET 0,PORTA            ;CUELGA PARA HACER MAS INTENTOS
+        sec
+        rts
+;
+TONO:
+        LDA #$04
+        STA CONT
+        BSET 1,FLAGS            ;BUCLE PARA ASEGURARSE DEL TONO
+TONO1:
+        BRSET 1,PORTC,MAR0      ;SI AHORA NO HAY TONO, NO ME CREO NADA
+        BRSET 1,FLAGS,TONO1
+MARCA2:
+        LDX PUNTER              ;PUNTERO PARA QUE COJA EL NUM. DE TELEFONO
+MARCA3:
+        LDA NUM1,X              ;AHORA LLAMARA AL OTRO
+        BEQ DEU
+        CMP #$2A
+        BEQ FI
+        STA DIGIT
+MARCA5:
+        BSET 0,PORTA
+        JSR BUL                 ;BUCLE  PARA EL PULSO A 1 60 mS
+        BCLR 0,PORTA
+        JSR BUC                 ;  "     "    "   "   " 0 30 mS
+        DEC DIGIT
+        BNE MARCA5
+        JSR BUL
+        JSR BUL                 ;BUCLE MAS LARGO DE ENTRE DIGITOS
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        JSR BUL
+        INX
+        BRA MARCA3
+;
+DEU:
+        LDA #$0A
+        STA DIGIT
+        BRA MARCA5
+FI:
+        CLR CONT5
+FI0:
+        LDA #$FF
+        STA CONT
+        BSET 1,FLAGS           ;BUCLE DE ESPERA PARA QUE DESCUELGUEN
+FI1:
+        BRSET 6,FLAGS,FI2       ;EL INT LO PONDRA SI DESCUELGAN Y PULSAN "*"
+        BRCLR 1,PORTC,MIRTON    ;VA AMIRAR SI HAY PI-PI-PI-
+FI4:
+        BRSET 1,FLAGS,FI1       ;MIENTRAS DURE EL BUCLE MIRA SI DESCUELGAN
+        BSET 0,PORTA            ;CUELGA
+        clc
+        rts
+
+        BCLR 0,FLAGS            ;QUTA EL FLAG DE DESCOLGADO
+        BCLR 6,FLAGS            ;QUITA EL DESCOLGDO DEL INT.
+FI3:
+                                ;SALE CON CARRY, NO HA IDO BIEN
+        DEC CONLLA              ;NUMERO DE VECES QUE INSISTIRA EN EL MISMO NUM.
+        BNE FI32
+        LDA #$03                ;HARA TRES LLAMADAS A CADA NUMERO
+        STA CONLLA              ;RECARGA CONTADOR DE LLAMADAS
+        LDA PUNTER
+        BEQ FI31
+        CLR PUNTER
+        BRA FI32
+FI31:
+        LDA #$0A
+        STA PUNTER              ;CARGA EL PUNTERO CON LA DIR. DEL SEG. NUM.
+FI32:
+        SEC
+        RTS
+FI2:
+        CLC
+        RTS
+MIRTON:
+        LDA #$15              ;BUCLE DE 120 mS.
+        STA CONT2
+        CLRA
+MIR:
+        BRSET 1,PORTC,FI4     ;MIRA SI HAY SENAL DE PI-PI-PI
+        BRSET 6,FLAGS,FI2     ;EL INT LO PONDRA SI DESCUELGAN Y PULSAN "*"
+        DECA                  ;ES EL TIME OUT, PARA SABER SI EL TONO ES CORTO
+        BNE MIR
+        DEC CONT2
+        BNE MIR
+        LDA #$10              ;BUCLE DE 65 mS.
+        STA CONT2
+        CLRA
+MIR1:
+        BRSET 1,PORTC,MIR2    ;MIRA SI HAY SENAL DE PI-PI-PI
+        BRSET 6,FLAGS,FI2     ;EL INT LO PONDRA SI DESCUELGAN Y PULSAN "*"
+        DECA                  ;ES EL TIME OUT, PARA SABER SI EL TONO ES CORTO
+        BNE MIR1
+        DEC CONT2
+        BNE MIR1              ;SI TERMINA EL BUCLE ES QUE ES UN TONO LARGO
+MIR3:
+        BRCLR 1,PORTC,MIR3      ;ESPERA QUE SE TERMINE EL TONO
+        JMP FI4                 ;POSIBLE QUE SEA EL TONO DE LLAMADA
+MIR2:
+        BSET 0,PORTA            ;CUELGA
+        BCLR 0,FLAGS
+        BCLR 6,FLAGS            ;QUITA EL DESCOLGDO DEL INT.
+        SEC
+        RTS
+;
+;
+BUCLE:
+        LDA #$15                 ;10
+        STA CONT
+        BSET 1,FLAGS           ;FLAG QUE PONE EL BUCLE DEL TIMER EN MARCHA
+BUCLE1:
+        BRSET 1,FLAGS,BUCLE1
+        RTS
+;
+BUCLIN:
+        STA SAVA1
+        STX SAVX
+        CLRA
+        LDX #$25                  ;20
+BUCLI:
+        DECA
+        BNE BUCLI
+        DEX
+        BNE BUCLI
+        LDA SAVA1
+        LDX SAVX
+        RTS
+;
+BUC:
+                          ;BUCLE CORTO DEL TIEMPO DE ENTRE PULSOS DE UN DIGITO
+        LDA #$4E                  ;48                ;35 MILISEGUNDOS
+        STA CONT1
+        bclr 1,flags
+BUC1:
+        brclr 1,flags,buc1
+        RTS
+
+;
+BUL:
+                   ;BUCLE MAS LARGO DE ENTRE PULSOS A UNO DEL MARCADO
+        JSR BUC
+        JSR BUC
+        RTS
+;
+SI:
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BCLR 1,PORTA            ;PONE EL PITO
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BSET 1,PORTA            ;LO QUITA
+        RTS
+ERROR:
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BCLR 1,PORTA
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BSET 1,PORTA
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BCLR 1,PORTA
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BSET 1,PORTA
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BCLR 1,PORTA
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BSET 1,PORTA
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BCLR 1,PORTA
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BSET 1,PORTA
+        RTS
+;
+; ßßßßßßßßßßßßßßßßßßßß SUBRUTINA QUE PREPARA EL TIMER ßßßßßßßßßßßßßßßßß
+
+PRETIM:                          ;PREPARA EL TIMER
+        LDA #$03
+        STA TDR
+        LDA #$0F
+        STA TCR
+        RTS
+
+;ßßßßßßßßßßßßßßßßßßßßßßßßßßß SUBRUTINA DE INTERRUPT DEL TIMER ßßßßßßßßßßßßßßßß
+
+
+INTIM:
+        BCLR 7,TCR
+;
+        BRCLR 5,FLAGS,INTIM1
+        DEC CONT1
+        BNE INTIM1
+        BCLR 5,FLAGS
+INTIM1:
+        DEC CONTIM
+        BNE SALTIM
+
+        BRCLR 1,FLAGS,SALTIM   ;HAY BUCLES POR HACER ?
+        DEC CONT
+        BNE SALTIM
+        BCLR 1,FLAGS
+
+SALTIM:
+        JSR PRETIM
+        RTI
+;
+INT:
+
+;ßßßßßßßß RUTINA QUE RECIBE LAS ORDENES POR LOS TONOS DE MULTI-FREC. ßßßßßßßßß
+
+
+        BCLR 3,FLAGS            ;RESET DE LA DOBLE PULSACION
+        LDX #$10
+        CLRA
+        JSR BUCLI
+        BIH INTE1               ;SI NO SIGUE EL INT. BAJO SALE
+INT1:
+        LDA PORTC
+        RORA
+        RORA
+        AND #$0F
+        CMP #$0B                ;SI ES, ES QUE HAN DESCOLGADO
+        BEQ DES
+        BRCLR 6,FLAGS,ESTR    ;NO ACEPTA ORDENES SI ANTES NO DESCUELGAN
+        CMP #$0A
+        BEQ DOBLE
+        BMI NUMREL              ;DEL 0A=REPOSO, AL 8 SON RELES
+        CMP #$0C                ;SI ES, ES QUE HAN COLGADO
+        BEQ CUELGA
+        JMP ERR
+ESTR:
+        JMP ESTROB
+CUELGA:
+        JMP CUEL
+INTE1:
+        JMP INTE
+DES:
+        JMP DESCU
+;
+NUMREL:
+        CMP #$09
+        BEQ STATUS
+        STA SAVA3
+        SEC
+        CLRA
+NU:
+        ROLA
+        DEC SAVA3
+        BNE NU
+        BRSET 3,FLAGS,NU0       ;SI ES SEGU. PULS. ES DESAC. EL RELE
+        STA SAVA3
+        LDA PORTB
+        ORA SAVA3
+        STA PORTB               ;ACTIVA EL RELE CORRESPONDIENTE
+        JSR SI                  ;DA LA SENAL DE OK
+        JMP ESTROB
+NU0:
+        COMA
+        STA SAVA3
+        LDA PORTB
+        AND SAVA3
+        STA PORTB
+        JSR SI
+        JSR BUCLIN
+        JSR SI                  ;DA DOS TONOS CORTOS PARA INDIC. DOBLE PULS.
+        BCLR 3,FLAGS            ;RESSET DE LA SEGUNDA PULSACION
+        JMP ESTROB
+STATUS:
+        BRSET 3,FLAGS,STATU
+        BSET 4,FLAGS
+        JMP ESTROB              ;ES DEMANDA DE TODO LO OCURRIDO
+STATU:
+        BCLR 3,FLAGS            ;RESSET DE LA SEGUNDA PULSACION
+        CLR MEMORI              ;RESET DE LAS ALARMAS PRODUCIDAS
+        LDA #$FF
+        STA WORD1               ;RESET DE LA MASCARA
+        JSR SI
+        JSR BUCLIN
+        JSR SI                  ;DA DOS TONOS CORTOS PARA INDIC. DOBLE PULS.
+        JMP ESTROB
+;
+DOBLE:
+        BRSET 3,FLAGS,NOREL     ;SI ESTA ES LA SEGUNDA PULSACION, RELES A CERO
+        BIL DOBLE               ;ESPERARA FIN DEL ESTROBE
+        CLR CONT2
+        LDA #$02
+        STA CONT3
+        CLRA
+DOBLE1:
+        BIL DOBLE2
+        DECA                     ;ES EL TIME OUT DE ESPERA PARA LA SEGUNDA PULS.
+        BNE DOBLE1
+        DEC CONT2
+        BNE DOBLE1
+        DEC CONT3
+        BNE DOBLE1
+        JSR ERROR               ;DA CUATRA PITOS PARA INDICAR ERROR
+        BRA ESTROB              ;A PASADO EL TIEMPO, SALE Y SE OLVIDA DE TODO
+DOBLE2:
+        BSET 3,FLAGS        
+        JMP INT1
+NOREL:
+        CLRA
+        STA PORTB
+        JSR SI                  ;DA LE SENAL DE OK
+        JSR BUCLIN
+        JSR SI                  ;DA DOS TONOS CORTOS PARA INDIC. DOBLE PULS.
+        BCLR 3,FLAGS            ;RESSET DE LA SEGUNDA PULSACION
+        BRA ESTROB
+ERR:
+        JSR ERROR
+        BCLR 3,FLAGS            ;RESSET DE LA SEGUNDA PULSACION
+        BRA ESTROB
+RESSET:
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BCLR 1,PORTA            ;PONE UN PITO LARGO PARA AVISAR QUE HARA RESET
+        LDA #$15
+        STA CONT
+RES:
+        JSR BUCLIN
+        DEC CONT
+        BNE RES
+        JMP ENTRY
+CUEL:
+        BRSET 3,FLAGS,RESSET    ;ESTO ES UN RESSET TOTAL
+        JSR SI
+        BSET 0,PORTA            ;CUELGA
+        LDA #$03
+        STA CONLLA              ;RECARGA EL CONTADOR DE LLAMADAS
+        CLR PUNTER              ;PONE EL PUNTERO PARA EL PRIMER NUMERO
+        BCLR 0,FLAGS
+        BCLR 6,FLAGS            ;FLAG DE DESCOLGADO POR EL ,*,
+        LDA MEMORI
+        COMA                    ;CREA LA MASCARA PARA QUE NO VUELVA A LLAMAR
+                                ;POR LAS MISMAS ALARMAS QUE AHORA
+        STA WORD1
+        BRA ESTROB
+DESCU:
+        BSET 6,FLAGS            ;HAN DESCOLGADO
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BCLR 1,PORTA            ;DA PITO DE OK
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        JSR BUCLIN
+        BSET 1,PORTA
+ESTROB:
+        BIL ESTROB              ;ESPERA QUE EL ESTROBE SE RESTABLEZCA
+
+INTE:
+        RTI
+NUM1:
+        FCB 09H,00H,08H,07H,04H,09H,02H,05H,04H,2AH,09H,00H,08H,02H,02H,03H,01H
+        FCB 00H,05H,2AH
+;        FCB 03H,07H,00H,06H,08H,05H,05H,2AH,00H,00H,09H,00H,08H,07H,04H,09H
+;        FCB 02H,05H,04H,2AH
+
+
+
+;  ßßßßßßßßßßßßßßßßÝ INICIALIZACION DE LOS VECTORES Ýßßßßßßßßßßßßßß
+
+        ORG 0F38H
+
+        FCB 0FH                       ;MASK OPTION REGISTER
+
+        ORG 0FF8H
+        FDB INTIM
+        FDB INT
+        FDB INTE
+        FDB ENTRY
+
+
+        END

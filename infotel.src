@@ -1,0 +1,1568 @@
+;******************************************************************************
+;*
+;* NOMBRE       : InfoTel.src
+;* DESCRIPCION  :
+;* LENGUAJE     :
+;* EDITOR       :
+;* OBSERVACIONES:
+;*
+;*
+;******************************************************************************
+;
+;
+;
+; Byte flags:
+;
+; bit 0 1- Descolgado / 0- Colgado
+; bit 1 Overflow en TimerH TimerL
+; bit 2 Overflow en Timer2H Timer2L
+; bit 3 No ha de cambiar de digito cuando pase un tiempo sin pulsar (edici¢n)
+; bit 4
+; bit 5
+; bit 6
+; bit 7
+;
+; DEFINICION DE LOS PORTS
+
+porta   equ 00h
+portb   equ 01h
+portc   equ 02h
+portd   equ 03h
+pca     equ 04h
+pcb     equ 05h
+pcc     equ 06h
+pcd     equ 07h
+mr      equ 0ah                 ;miscellaneous register
+
+
+
+
+T_NUMERO        equ  40h
+T_SIGUIENTE     equ  0c0h
+T_POSICION      equ  80h
+
+; COMANDOS PARA LA EEPROM
+
+READ     equ 03h
+EWEN     equ 02h
+ERASE    equ 03h
+ERAL     equ 02h
+WRITE    equ 02h
+WRAL     equ 02h
+EWEDS    equ 02h
+
+READ1    equ 00h
+EWEN1    equ 60h
+ERASE1   equ 80h
+ERAL1    equ 40h
+WRITE1   equ 80h
+WRAL1    equ 20h
+EWEDS1   equ 00h
+
+BIT_START equ 01h
+
+EE_CS    equ 5
+EE_PORT  equ PORTC
+
+E        equ 0          ;Bit del puerto donde est· conectada la lÌnea E
+WR       equ 2          ;Bit del puerto donde est· conectada la lÌnea WR
+RS       equ 1          ;Bit del puerto donde est· conectada la lÌnea RS
+
+CTR_DISP equ PORTC      ;PUERTO DONDE EST¡N CONECTADAS LAS LÕNEAS DE CONTROL
+DAT_DISP equ PORTB      ;PUERTO DONDE EST¡N CONECTADAS LAS LÕNEAS DE DATOS
+
+VELOCIDAD equ 02
+
+CUR_MOV   equ 0
+
+P_TELEF  equ PORTC
+TONOS    equ 3
+COLGAR   equ 4
+MARCAR   equ 4
+
+;============================= SEGMENTO DE RAM ============================
+
+scdat   equ 0011h     ;sERIAL cOMUNICATIONS dATA rEGISTER
+sccr1   equ 000eh     ;sERIAL cOMUNICATION rEGISTER 1
+sccr2   equ 000fh     ;sERIAL cOMUNICATION rEGISTER 2
+scsr    equ 0010h     ;sERIAL COMUNICATION sTATUS rEGISTER
+baud    equ 000dh     ;bAUD rATE rEGISTER
+tcr     equ 0012h     ;tIMER cONTROL rEGISTER
+tsr     equ 0013h     ;tIMER sTATUS rEGISTER
+entry   equ 0100h     ;direccion comienzo rom
+optreg  equ 0fdfh     ;option register
+tcrh    equ 0018h     ;timer count register (high)
+tcrl    equ 0019h     ;timer count register (low)
+spcr    equ 0ah       ; spcr (serial peripheral control register)
+spsr    equ 0bh       ; Serial Peripheral Status Register
+spdr    equ 0ch       ; Serial Peripheral Data I/O Register
+
+                                 org 50h
+
+;================================ RAM ========================================
+sava      res 1
+savx      res 1
+long      res 1
+string    res 11
+result    res 6
+
+adrs      res 1
+data      res 2
+BufDat    res 3
+
+car       res 1
+AntCar    res 1
+
+condis    res 01
+datdis    res 01
+statcr    res 01         ;// Estado cursor (on/off)
+crdir     res 01         ;// Direcci¢n cursor
+
+word1     res 1
+word2     res 1
+temp      res 1
+temp2     res 1
+temp3     res 1
+temp4     res 1
+temp5     res 1
+temp6     res 1
+savx2     res 1
+time      res 1
+cursor    res 2
+CntGuion  res 1
+flags     res 1
+PosNum    res 1
+posicion  res 1
+numero    res 1
+lopx      res 1
+lopa      res 1
+TimH      res 1
+TimL      res 1
+Tim2H     res 1
+Tim2L     res 1
+cont2     res 1
+ErrTel    res 1
+CntLlam   res 1
+veces     res 1
+FlagLlam  res 1
+CntNoNum  res 1
+
+;================================= MAIN =======================================
+
+                           PSCT
+                           org entry    ;comienzo rom
+        LDA #$b7
+        sta PCC
+        clra
+        sta PCA
+
+        clr cursor
+
+        bclr EE_CS,EE_PORT      ;Desactiva el chip select de la eeprom
+        bclr 7,PORTC
+        jsr inispi      ;//Inicializa el modo spi.
+
+        lda #$ff
+        jsr DesplaOut
+
+        jsr pretim      ;Pone en marcha el timer
+        bset 5,TCR
+        jsr IniDis       ;Inicializa el display
+        bset COLGAR,P_TELEF ;Cuelga el telÇfono.
+
+        cli
+
+        clr flags
+
+        lda PORTA
+        sta word1
+        clr FlagLlam
+       
+main:
+
+        jsr PantExplor  ;Pantalla explorando
+     
+mai:
+
+        jsr getch       ;Mira si hay pulsaci¢n de teclado
+        bne jedicion
+
+        lda PORTA
+        eor word1
+        bne bc0
+
+        lda FlagLlam
+        beq mai
+
+pendient:
+
+        lda FlagLlam
+        sta word2
+        bra bc
+
+jEdicion:
+        jmp edicion
+
+;------------------ Ha habido un cambio en los reles ------------------------
+;Mira que relÇ es el que ha cambiado
+;haciendo shiftar word2.
+;
+bc0:
+        sta word2
+        and PORTA
+        bne bc
+
+        lda PORTA
+        sta Word1
+        bra main
+
+bc:
+        lda PORTA
+        sta temp5
+
+        clrx
+        lda word2
+        sta temp3
+        lda #$fe
+        sta temp4
+        clc
+bucl:
+        ror temp3
+        bcs EsUno
+bucl1:
+        sec
+        rol temp4
+        incx
+        cpx #$8
+        bne bucl
+        lda word2            
+        sta word1
+        bra main
+
+
+EsUno:
+        lda temp5
+        sta word2
+
+        lda FlagLlam
+        and temp4
+        sta FlagLlam
+
+        stx savx2
+        jsr llamar      ;Llama al n£mero coorespondiente a ese relÇ
+        bcc NoErr
+
+        lda ErrTel      ;Si ErrTel==0xff no hay n£mero grabado en esa posici¢n
+        cmp #$ff
+        beq NoErr2
+
+        lda temp5       ;No ha podido comunicar con ese n£mero
+        and temp4
+        ora word2
+
+        lda temp4       ;Pone el bit correspondiente a ese relÇ para que
+        nega            ;sepa que queda una llamada pendiente por hacer.
+        deca
+        ora FlagLlam
+        sta FlagLlam
+        ldx savx2
+        bra bucl1
+
+NoErr:
+        ldx temp4
+        jsr PlayMsg         ;Reproduce mensaje
+        bset COLGAR,P_TELEF ;Cuelga el telÇfono.
+NoErr2:
+
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        ldx savx2
+        bra bucl1
+
+
+ignra:
+        lda PORTA
+        sta word1
+        jmp main
+
+
+;---------------- Llama a un n£mero de telÇfono ------------------------------
+;En x ha de estar el n£mero de relÇ que ha cambiado
+
+llamar:
+        lda #$3
+        sta CntLLam
+        sta CntNoNum
+
+        txa
+        inca
+        add #'0'
+        sta posicion
+        lda #'1'
+        sta numero
+
+        lda #15
+        fcb 42h         ;mul
+llam:
+        sta adrs
+        jsr LeeNum      ;El n£mero est† en string
+        jsr PantLLamando
+        jsr ShowNum     ;Muestra el n£mero
+
+        lda temp        ;Si temp regresa con un 00 quiere decir que
+        sta temp6
+        bne llama
+
+        dec CntNoNum
+        lda CntNoNum
+        bne SiFin
+
+        lda #$ff
+        sta ErrTel
+        sec
+        rts
+        
+SiFin:
+
+        lda #$3
+        sta ErrTel
+        bra SiErr2
+
+llama:
+        lda #$2
+        sta condis
+        jsr wadc        ;Posiciona el cursor
+
+        lda posicion
+        sta datdis
+        jsr wrdat
+
+        lda #$6
+        sta condis
+        jsr wadc        ;Posiciona el cursor
+
+        lda numero
+        sta datdis
+        jsr wrdat
+
+        lda #$0c        ;clear display
+        sta condis
+        jsr wrcon
+
+        jsr marca       ;llama por telf. a ese n£mero.
+        bcs error       ;Error, no ha podido llamar
+        clr ErrTel
+        clc
+        rts
+
+error:
+        lda ErrTel
+        ldx #$11
+        fcb 42h         ;mul
+        tax
+
+        clra
+        sta condis
+        jsr wadc        ;Posiciona el cursor
+
+err:
+        lda errores,x
+        cmp #$0
+        beq FinErr
+
+        sta DatDis
+        jsr wrdat
+        incx
+        bra err
+
+
+FinErr:
+        lda #$5f
+FinEr:
+        jsr buc
+        deca
+        bne FinEr
+
+SiErr2:
+
+        inc numero
+        lda adrs
+        add #$05
+        sta adrs
+        dec CntLLam      ;Contador de llamadas
+        beq salt1
+        jmp llam
+
+salt1   clr ErrTel
+        sec
+        rts
+
+
+PlayMsg:
+
+        txa
+        jsr DesplaOut
+        jsr bul
+        jsr bul
+        jsr bul
+        lda #$ff
+        jsr DesplaOut   ;Pulso para activar la placa
+
+        clra
+        sta condis
+        jsr wadc        ;Posiciona el cursor
+
+        clrx
+MsgRep:
+        lda reproduc,x
+        sta DatDis
+        jsr wrdat
+        incx
+        cpx #16
+        bne MsgRep
+
+        lda #$01
+        sta TimH
+        lda #$8a
+        sta TimL
+        bclr 1,flags
+espera:
+        brclr 1,flags,espera    ;Espera 30 segundos para el mensaje
+        rts
+
+
+DesplaOut:
+
+        jsr SpiOut
+        bset 7,PORTC
+        bclr 7,PORTC
+        rts
+
+;======================== EDICION NUMEROS TELêFONO ==========================
+edicion:
+
+        clr adrs        ;Posici¢n 00 en la eeprom
+        lda #'1'
+        sta posicion
+        sta numero
+edi:
+        jsr PantEdicion
+        jsr LeeNum      ;Lee el n£mero y lo pone en string
+
+        jsr ShowNum     ;Muestra el n£mero en el display
+
+        lda #$0f        ;Muestra el cursor
+        sta condis
+        sta statcr
+        jsr wrcon
+
+        lda temp
+        add #$43
+        sta cursor
+        sub #$43
+        sta PosNum
+        bset 3,flags
+
+edita:
+        lda #$50
+        sta TimL
+        lda #$1
+        sta TimH
+        bclr 1,flags
+
+edita1:
+        lda #$0a
+        sta Tim2L
+        lda #$1
+        sta Tim2H
+        bclr 2,flags
+
+edita2:
+        brset 1,flags,FinEdicion        ;Pasa un tiempo sin pulsar
+        brset 2,flags,jEsSiguiente
+
+        lda cursor
+        sta condis
+        jsr wadc        ;Posiciona el cursor
+
+        jsr getch       ;Espera una pulsaci¢n del teclado
+        lda car
+        cmp #T_NUMERO
+        beq PulsanNumero
+        cmp #T_SIGUIENTE
+        beq PulsanClr
+
+        cmp #T_POSICION
+        beq jPulsanPosicion
+        bra edita2
+
+jEsSiguiente:
+        jmp EsSiguiente
+
+jPulsanPosicion:
+        jmp PulsanPosicion
+                  
+FinEdicion:
+
+        jsr GuardaNumero
+        jmp main
+
+PulsanNumero:
+
+        bclr 3,flags
+        ldx PosNum
+        cpx #$0a
+        bpl edita
+
+        lda string,x
+        cmp #' '
+        beq EsGuion
+        inca
+        cmp #$3a
+        bne NoA
+
+        lda #' '
+NoA     sta string,x
+
+        jsr ShowNum
+        bra edita
+
+EsGuion:
+        lda #'0'
+        sta string,x
+        jsr ShowNum
+        bra edita
+
+
+PulsanClr:
+
+        bset 3,flags
+        lda PosNum
+        beq edita
+
+        ldx PosNum
+        lda string,x
+        cmp #' '
+        beq opc1
+        cmp #$5d
+        beq opc1
+
+        lda #' '
+        ldx PosNum
+        sta string,x
+        sta DatDis
+        jsr wrdat
+        jmp edita
+        
+opc1:
+        dec PosNum
+        dec cursor
+
+        lda cursor
+        sta condis
+        jsr wadc        ;Posiciona el cursor
+
+        lda #' '
+        ldx PosNum
+        sta string,x
+        sta DatDis
+        jsr wrdat
+
+        lda cursor
+        sta condis
+        jsr wadc
+jedita  jmp edita
+jedita1 jmp edita1
+
+EsSiguiente:
+
+        brset 3,flags,jedita1
+
+        lda cursor
+        cmp #$4d
+        bpl jedita
+
+        bset 3,flags
+        inc PosNum
+        inc cursor
+        lda cursor
+        jmp edita
+
+
+PulsanPosicion:
+
+        jsr GuardaNumero
+
+        inc numero
+        lda numero
+        cmp #'4'
+        bne FinPos
+
+        lda #'1'
+        sta numero
+        inc posicion
+        lda posicion
+        cmp #'9'
+        bne FinPos
+        jmp edicion
+
+FinPos:
+        lda adrs
+        add #$5
+        sta adrs
+        jmp edi
+
+
+;=========================== MODULOS PARA EL TELEFONO ========================
+
+marca:
+        bclr COLGAR,P_TELEF      ;descuelga
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+
+        lda #$ff
+        sta TimL
+        lda #$03
+        sta TimH
+        bclr 1,flags
+
+marca1:
+        brclr TONOS,P_TELEF,tono  ;mira el tono de linea antes de marcar
+        brclr 1,flags,marca1   
+mar0:
+        bset COLGAR,P_TELEF      ;cuelga
+        clr ErrTel
+        sec
+        rts
+;
+tono:
+        lda #$10
+        sta TimL
+        lda #$01
+        sta TimH
+        bclr 1,flags
+tono1:
+        brset TONOS,P_TELEF,mar0                ;No hay tono, error.
+        brclr 1,flags,tono1
+marca2:
+        clrx                    ;Indice para que coja el num. de telÇfono
+marca3:
+        lda string,x            ;ahora llamara al otro
+        cmp #' '                ;Los espacios en blanco los ignora
+        beq ignora
+
+        sub #'0'
+        beq deu
+        sta temp
+marca5:
+        bset MARCAR,P_TELEF
+        jsr bul                 ;bucle  para el pulso a 1 60 Ms
+        bclr MARCAR,P_TELEF
+        jsr buc                 ;  "     "    "   "   " 0 30 Ms
+        dec temp
+        bne marca5
+
+        jsr bul
+        jsr bul                 ;bucle mas largo entre digitos
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+        jsr bul
+ignora:
+        incx
+        cpx #$0a
+        beq fi
+        bra marca3
+;
+deu:
+        lda #$0a
+        sta temp
+        bra marca5
+
+fi:
+        brset TONOS,P_TELEF,fi  ;Espera que baje la linea
+
+fi0:
+        bclr 4,flags
+        lda #$20
+        sta TimL
+        lda #$1
+        sta TimH
+        bclr 1,flags
+fi1:
+        brclr TONOS,P_TELEF,mirton ;va amirar si hay pi-pi-pi-
+fi4:
+        brclr 1,flags,fi1
+        brset 4,flags,FiEr
+        clc
+        rts
+FiEr:
+        lda #$1
+        sta ErrTel
+        bset COLGAR,P_TELEF       ;cuelga
+        sec
+        rts
+
+
+fi14:
+        bset 4,flags
+        bra fi4
+
+mirton:
+        lda #$55
+        sta cont2
+        clra
+mir:
+        BRSET TONOS,P_TELEF,fi4;mira si hay senal de pi-pi-pi
+        deca                   ;es el time out, para saber si el tono es corto
+        bne mir
+        dec cont2
+        bne mir
+
+        lda #$70               ;bucle de 65 Ms.
+        sta cont2
+        clra
+mir1:
+        BRSET TONOS,P_TELEF,fi14 ;mira si hay senal de pi-pi-pi
+        deca                    ;es el time out, para saber si el tono es corto
+        bne mir1
+        dec cont2
+        bne mir1                ;si termina el bucle es que es un tono largo
+mir3:
+        brclr TONOS,P_TELEF,mir3      ;espera que se termine el tono
+        bra fi0
+
+mir2:
+        bset COLGAR,P_TELEF       ;cuelga
+        lda #$02
+        sta ErrTel
+        sec
+        rts
+
+;========================= MODULOS PARA EL DISPLAY ==========================
+
+GuardaNumero:
+
+        jsr comprime    ;Convierte el n£mero a BCD
+
+        lda adrs
+        sta sava
+        clrx
+bcWrt:
+        lda result,x
+        sta data
+        jsr ee_wrte
+        inc adrs
+        incx
+        cpx #$5
+        bne bcWrt
+        lda sava
+        sta adrs
+        rts
+
+
+comprime:
+        clr temp
+        clr temp2
+comp:
+        ldx temp
+        lda string,x
+        cmp #' '
+        bne No2d
+
+        lda #$0f
+        bra No2
+
+No2d    sub #'0'
+No2     sta sava
+
+        incx
+        inc temp
+        lda string,x
+        cmp #' '
+        bne No2d2
+
+        lda #$0f
+        bra No21
+
+
+No2d2   sub #'0'
+No21    clc
+        rola
+        rola
+        rola
+        rola
+        ora sava
+
+        ldx temp2
+        sta result,x
+
+        inc temp
+        inc temp2
+        lda temp2
+        cmp #$5
+        bne comp
+        rts
+
+
+LeeNum:
+        lda adrs
+        sta sava
+
+        clrx
+edit:
+        jsr ee_read             ;Lee el n£mero de telÇfono en la eeprom
+        inc adrs
+        lda BufDat
+        sta result,x
+        incx
+        cpx #$5
+        bne edit
+
+        lda sava
+        sta adrs
+
+        clr temp
+        clr temp2
+descom:
+        ldx temp
+        lda result,x
+
+        and #$0f
+        cmp #$0a
+        bmi nof
+        bra sif
+
+nof     add #'0'
+        ldx temp2
+        sta string,x
+        inc temp2
+
+sif     ldx temp
+        lda result,x
+        and #$f0
+        rora
+        rora
+        rora
+        rora
+
+        cmp #$0a
+        bmi nof1
+        bra sif1
+
+nof1    add #'0'
+        ldx temp2
+        sta string,x
+        inc temp2
+sif1    inc temp
+        lda temp
+        cmp #$05
+        bne descom
+
+        ldx temp2
+fill:
+        cpx #$0a
+        beq FinFill
+
+        lda #$20
+        sta string,x
+        incx
+        bra fill
+
+FinFill:
+        rts
+
+ShowNum:
+        lda #$42
+        sta condis
+        jsr wadc
+
+        lda #$5b
+        sta DatDis
+        jsr wrdat
+
+        clrx
+        clr temp
+OutNum:
+        lda string,x
+        cmp #$20
+        beq es20
+        inc temp
+es20:
+        sta DatDis
+        jsr wrdat
+        incx
+        cpx #$0a
+        bne OutNum
+
+        lda #$4d
+        sta condis
+        jsr wadc
+
+        lda #$5d
+        sta DatDis
+        jsr wrdat
+
+        rts
+
+
+
+
+MuestraGuion:
+
+        brset CUR_MOV,flags,No8  ;Si est† a 1 no refresca el guion
+
+        dec CntGuion
+        bne No8
+
+        lda #VELOCIDAD
+        sta CntGuion
+
+        lda cursor+1
+
+        sta condis
+        jsr wadc        ;Posiciona el cursor para ' '
+
+        lda #' '
+        sta datdis
+        jsr wrdat
+
+        lda cursor
+        sta condis
+        jsr wadc        ;Posiciona el cursor para ' '
+
+        lda #' '
+        sta datdis
+        jsr wrdat
+
+        lda cursor
+        sta cursor+1
+
+        inc cursor
+        lda cursor
+        cmp #$8
+        bne No8
+        clr cursor
+No8:
+        rts
+
+
+PantExplor:
+
+        lda #$01        ;//clear display
+        sta condis
+        jsr wrcon
+
+        lda #$1
+        sta condis
+        jsr wadc        ;//Posiciona el cursor
+        clrx
+PantEx:
+        lda explor,x
+        sta datdis
+        jsr wrdat
+        incx
+        cpx #$10
+        bne PantEx
+
+        lda #$41
+        sta condis
+        jsr wadc        ;//Posiciona el cursor
+        ldx #$10
+PantEx2:
+        lda explor,x
+        sta datdis
+        jsr wrdat
+        incx
+        cpx #$1f
+        bne PantEx2
+        rts
+
+
+PantEdicion:
+
+        lda #$01        ;//clear display
+        sta condis
+        jsr wrcon
+
+        lda #$0
+        sta condis
+        jsr wadc        ;//Posiciona el cursor
+        clrx
+PantEd:
+        lda edic,x
+        sta datdis
+        jsr wrdat
+        incx
+        cpx #$f
+        bne PantEd
+
+        lda #$2
+        sta condis
+        jsr wadc        ;//Posiciona el cursor
+
+        lda posicion
+        sta datdis
+        jsr wrdat
+
+        lda #$6
+        sta condis
+        jsr wadc
+
+        lda numero
+        sta datdis
+        jsr wrdat
+        rts
+
+
+PantLlamando:
+
+        lda #$01        ;//clear display
+        sta condis
+        jsr wrcon
+
+        lda #$0
+        sta condis
+        jsr wadc        ;//Posiciona el cursor
+        clrx
+Pantll:
+        lda llamando,x
+        sta datdis
+        jsr wrdat
+        incx
+        cpx #$f
+        bne Pantll
+        rts
+
+
+
+;       inicializacion display
+inidis:
+
+        lda #$3c
+        sta condis
+        jsr wrcon
+        lda #$0c        ;//inicia con cursor off
+        sta condis
+        sta statcr
+        jsr wrcon
+        lda #$01
+        sta condis
+        jsr wrcon
+
+ClrDsp:
+        lda #$01        ;//clear display
+        sta condis
+        jsr wrcon
+        RTS
+cradd:
+        clr DAT_DISP+4
+        bset E,CTR_DISP
+        bset WR,CTR_DISP
+        bclr RS,CTR_DISP
+        lda DAT_DISP
+        and #$7f
+        rts
+
+wrcon:
+        jsr busy
+        bset E,CTR_DISP     ;sube e
+        bclr WR,CTR_DISP    ;baja wr
+        bclr RS,CTR_DISP    ;baja rs
+        lda #$ff
+        sta DAT_DISP+4
+        lda condis
+        sta DAT_DISP
+        bclr E,CTR_DISP    ;restablece rs
+        bset WR,CTR_DISP    ;   ""      wr
+        bset RS,CTR_DISP     ;   ""      e
+        clr DAT_DISP
+        rts
+
+; Polsiciona el cursor donde indique condis
+
+wadc:
+        lda condis
+        ora #$80
+        sta condis
+        jsr wrcon
+        bclr 7,condis
+        rts
+
+
+busy:
+        clra
+        sta DAT_DISP+4
+        bclr RS,CTR_DISP
+        bset WR,CTR_DISP
+        bset E,CTR_DISP
+busy1:
+        brset 7,DAT_DISP,busy1
+        rts
+
+
+WRDAT:
+        jsr busy
+        bset RS,CTR_DISP
+        bclr WR,CTR_DISP
+        bset E,CTR_DISP
+        lda #$ff
+        sta DAT_DISP+4
+        lda datdis
+        sta DAT_DISP
+        bclr E,CTR_DISP
+        bset WR,CTR_DISP
+        bclr RS,CTR_DISP
+        clra
+        sta DAT_DISP
+        rts
+;PrintFuncs:
+;
+;        lda funcs,x
+;        beq PrtFncsEnd
+;        tsta datdis
+;        jsr wrdat
+;        incx
+;        bra PrintFuncs
+;
+;PrtFncsEnd:
+;
+;        rts
+
+;PrintInfo:
+;
+;        lda info,x
+;        beq PrtInfEnd
+;        sta datdis
+;        jsr wrdat
+;        incx
+;        bra PrintInfo
+;
+;PrtInfEnd:
+;        rts
+
+
+; Saca al display un string de tipo ASCIIZ en la posici¢n actual del cursor.
+; x ha de venir con la direccion del string .
+
+OutStr:
+        lda 0,x
+        beq FinOut
+        sta datdis
+        jsr wrdat
+        bra OutStr
+FinOut:
+        rts
+
+;======================= MODULOS PARA EL TECLADO =============================
+
+
+;---------------------------------- GETCH --------------------------------------
+;Obtiene una tecla del teclado, el teclado se compone de todos los pulsadores
+;del panel frontal.
+;Mientras se hacen pulsaciones cortas en cualquier tecla, la rutina GETCH,
+;devuelve el byte 'car' el caracter pulsado, si no se pulsa ninguna tecla
+;devuelve un 00.
+;
+;Si el caracter se mantiene pulsado, hace un bucle hasta que se suelta
+;la tecla, si no se suelta ira haciendo bucles mas cortos.
+;entre bucle y bucle va devolviendo la tecla pulsada.
+;
+;Para saber si la pulsaciÛn de la tecla es la primera, hace una comparaciÛn
+;del byte 'car' con el byte 'Antcar', el byte Antcar contiene la £ltima tecla
+;pulsada.
+;Si son diferentes, no har† ning£n bucle, pero si son iguales hara el bucle.
+;una vez acabado el bucle, cambia el byte time, que inicialmente esta cargado
+;con #$f0, a #$30, para que el pr¢ximo bucle sea m†s corto, ya que el byte
+;time indica la duraci¢n del bucle.
+;
+;El conmutador es independiente del teclado, en la variable 'AntConmut', se guar
+;la posici¢n del conmutador, mientras sea igual la rutina getch lo ignora hasta
+;que haya alg£n cambio en el conmutador.
+;
+getch:
+        jsr MiraTeclas
+        beq FinGetc3            ;// Si no es as°, regresa con un 00.
+
+        sta car
+        jsr AntiReb             ;// Bucle antirrebotes
+        jsr MiraTeclas
+        cmp car                 ;// Mira si la tecla pulsada es la misma que
+        bne FinGetc3            ;// antes. Si no es as°, regresa con un 00.
+
+        cmp Antcar              ;// Mira si la tecla de antes a£n sigue pulsada.
+        bne FinGetc2            ;// si no es as°, regresa con la tecla recien
+                                ;// pulsada.
+GetBu:
+        ldx time                ;// Inicia el bucle con la duraciÛn indicada
+                                ;// en time.
+GetBuc:
+        jsr AntiReb             ;// Bucle antirrebotes
+        jsr MiraTeclas
+        cmp car                 ;// Mira si a£n sigue la tecla pulsada.
+        bne FinGetc3            ;// Han soltado la tecla, regresa con un 00.
+        decx
+        cpx #$00                ;// Fin bucle?
+        bne GetBuc              ;// No, continua ...
+
+        lda #$40                ;// Como ya ha hecho un bucle largo, los (80)
+        sta time                ;// siguientes han de ser cortos.
+
+FinGetc2:
+        lda car                 ;// Memoriza LA TECLA RECIEN PULSADA.
+        sta Antcar
+        RTS
+
+FinGetc3:
+        lda #$80                ;// El siguiente bucle tendra que ser largo.
+        sta time
+        clr car                 ;// Regresa con un 00.
+        clr Antcar              ;// Borra la tecla memorizada.
+        RTS
+
+
+
+MiraTeclas:
+
+        lda PORTD               ;// Mira si la tecla est† realmente pulsada.
+        and #$80
+        sta temp
+
+        lda PORTC
+        and #$40
+        ora temp
+        coma
+        and #$c0
+        rts
+;//--------------------------------------------------------------------------
+
+
+AntiReb:
+        sta sava
+        stx savx
+        lda #$05
+anti2:
+        ldx #$f0
+anti3:
+        decx
+        bne anti3
+        deca
+        bne anti2
+        ldx savx
+        lda sava
+        rts
+
+wait:
+        ldx #$03
+wai:
+        decx
+        bne wai
+        rts
+
+AntiRe2:
+        stx savx
+        ldx #$5
+AntiRe3:
+        decx
+        cpx #$00
+        bne AntiRe3
+        ldx savx
+        rts
+
+buc:
+        stx savx     ;BUCLE CORTO DEL TIEMPO DE ENTRE PULSOS DE UN DIGITO
+        sta sava
+
+        lda #$ff
+buc2:
+        ldx #$2a
+BUC1:
+        decx
+        bne buc1
+        deca
+        bne buc2
+
+        ldx savx
+        lda sava
+        RTS
+BUL:
+                   ;BUCLE MAS LARGO DE ENTRE PULSOS A UNO DEL MARCADO
+        JSR BUC
+        JSR BUC
+        RTS
+
+;====================== MODULOS PARA LA EEPROM ===============================
+
+;-------------- SUBRUTINA PARA ESCRIBIR EN LA EEPROM -------------------------
+
+;ADRS TIENE LA DIRECCION
+;DATA TIENE LOS DOS BYTES A ESCRIBIR
+
+
+ee_wrte:
+        bset EE_CS,EE_PORT      ;Activa el chip select de la eeprom
+        lda #BIT_START
+        jsr SpiOut
+        lda #EWEN               ;EWEN
+        jsr SpiOut
+        lda #EWEN1
+        jsr SpiOut
+        bclr EE_CS,EE_PORT      ;Desactiva el chip select de la eeprom
+        jsr loop
+
+
+        bset EE_CS,EE_PORT      ;Activa el chip select de la eeprom
+        lda #ERASE
+        jsr SpiOut
+        lda #ERASE1
+        add adrs
+        jsr SpiOut
+        bclr EE_CS,EE_PORT      ;Desactiva el chip select de la eeprom
+        jsr loop
+
+        bset EE_CS,EE_PORT
+
+        lda #WRITE              :Comando de escribir
+        jsr spiOUT
+
+        lda #WRITE1
+        add adrs
+        jsr spiOUT
+        lda data
+        jsr spiOUT
+
+        bclr EE_CS,EE_PORT
+        jsr loop
+wri2:
+
+        bset EE_CS,EE_PORT      ;Activa el chip select de la eeprom
+        lda #EWEDS              ;ewds
+        jsr SpiOut
+        lda #EWEDS1
+        jsr SpiOut
+        bclr EE_CS,EE_PORT      ;Desactiva el chip select de la eeprom
+        jsr loop
+        rts
+
+
+
+
+;------------------ LEE DOS BYTES DE LA EEPROM --------------------------
+;Lee un byte de una posici¢n especifica de memoria de la eeprom.
+;La direcci¢n ha de estar en addrs.
+;El byte quedan en BUFDAT
+
+ee_read:
+
+
+        bset EE_CS,EE_PORT
+
+        lda #READ
+        jsr spiOUT
+        nop
+        nop
+        nop
+        nop
+        lda #READ1
+        add adrs
+        jsr spiOUT
+
+        jsr spiIN
+        sta BufDat
+
+        bclr EE_CS,EE_PORT
+        jsr loop
+        rts
+
+
+
+loop:
+        stx lopx
+        sta lopa
+
+        lda #$05
+lp1:
+        ldx #$ff
+loo1:
+        DECX
+        BNE LOO1
+        deca
+        bne lp1
+        ldx lopx
+        lda lopa
+        RTS
+
+
+;========================== MODULOS MATEMATICOS =============================
+
+;====================== MODULOS CONFIGUACION CPU =============================
+
+pretim:
+
+        lda #$ff
+        sta tcrH
+        lda #$0f
+        sta tcrL
+        rts
+
+;----------- LEE UN BITE DEL SPI Y LO PONE EN A ---------------------------
+
+spiIN:
+        LDA #$57                ;CAMBIA LA FASE DEL CLOCK
+        STA SPCR
+        CLRA                    TRANSMITE 00 PARA QUE GENERE EL CLOCK
+        JSR SPIOUT              ;Y ASI PERMITIR AL DEVICE QUE TRANSMITA EL BYTE.
+        LDA #$53                ;CAMBIA LA FASE DEL CLOCK
+        STA SPCR
+        LDA SPDR                ;LEE EL BYTE RECIBIDO.
+        RTS
+
+;----------------- TRANSMITE AL SPI EL CONTENIDO DE A ---------------------
+
+spiOUT:
+
+        sta spdr                ;//Transmite el comando al 802
+eew4    brclr 7,spsr,eew4       ;//espera que transmita el byte
+        rts
+
+
+;---------------------------- inicializaciÛn spi -------------------------------
+;***************************** importante *************************************
+;                                                      __
+;para que el micro acepte ser master se ha de poner el ss a positivo (pata 37),
+;si no es asi el micro rechaza el bit 4 del spcr (master),
+;
+;******************************************************************************
+
+inispi:
+        lda #$53        ;//Serial Peripheral Interrupt Disable
+        sta spcr        ;//Serial Peripheral System Enable
+                        ;//Master mode
+                        ;//SCK line idles in low state
+                        ;//     __
+                        ;//When SS is low, first edge of SCK invokes first data
+                        ;//sample.
+                        ;//Internal Processor Clock Divided by 32
+        rts
+
+;--------------------------------------------------------------------------
+
+
+
+
+;================================= R O M  D A T A ============================
+
+llamando:
+        fcb 'R   N   Llamando'
+edic:
+        fcb 'R   N   Edicion '
+explor:
+        fcb ' Electronica    '
+        fcb 'Barcelona S.L.  '
+
+
+reproduc:
+        fcb 'REPROD. MENSAJE '
+
+
+errores:
+        fcb 'ERROR: SIN TONO ',0
+        fcb 'ERROR: SIN RESP.',0
+        fcb 'ERROR:LINEA MALA',0
+        fcb 'ERROR:SIN NUMERO',0
+
+
+
+
+
+;============================ RUTINAS INTERRUPION ===========================
+
+
+TIMER:
+        dec TimL
+        bne FinCnt1
+
+        dec TimH
+        bne FinCnt1
+
+dTimH:
+        bset 1,flags    ;Indica overflow en TimerH TimerL
+
+FinCnt1:
+
+        dec Tim2L
+        bne FinTimer
+
+        dec Tim2H
+        bne FinTimer
+
+        bset 2,flags    ;Indica overflow en Timer2H Timer2L
+
+
+FinTimer:
+
+        brset E,CTR_DISP,NoRefresco ;Se est† utilizando el display, por lo
+                                     ;que no refresca el watch dog.
+
+        ldx PCB
+        lda #$ff
+        sta PCB
+
+        lda #$1
+        sta PORTB
+        clra
+        sta PORTB         ;Refresco del Watch Dog
+
+        stx PCB
+
+NoRefresco:
+
+        bclr 5,TSR
+        jsr pretim
+        rti
+
+
+IRQ:
+SPI:
+SCI:
+SWI:
+
+        RTI
+;==============================================================================
+;======================== VECTOres INTERRUPCION ===============================
+                               org 1ff0h
+
+        fdb 0000
+                               org 1ff4h
+
+        fdb spi
+        fdb sci
+        fdb timer
+        fdb irq
+        fdb swi
+        fdb entry
+
+;------------------------------------------------------------------------------
+;-------------------- CONFIGURACION REGISTROS --------------------------------
+;
+;                                ORG 1FDFH       'OPTION REGISTER
+;
+;        FCB 082H               ;RAM0 = 1
+;                               ;RAM1 = 1
+;-----------------------------------------------------------------------------
+
+        END

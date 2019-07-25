@@ -1,0 +1,16 @@
+OPEN Source 0 0 60 54
+Source < attributes MARKS off
+OPEN Assembly 60 0 40 30
+Assembly < attributes ADR off,CODE off,ABSADR on,TOPPC 0x160
+OPEN Register 60 30 40 30
+Register < attributes FORMAT HEX
+OPEN Memory 60 60 40 40
+Memory < attributes FORMAT hex,WORD 1,ASC on,ADR on,ADDRESS 0x0
+OPEN Data 0 53 60 23
+Data < attributes SCOPE global,FORMAT Symb,MODE automatic,UPDATERATE 10
+OPEN Command 0 76 60 25
+Command < attributes CACHESIZE 1000
+bckcolor WHITE
+font 'Courier New' 9 BLACK
+AUTOSIZE on
+ACTIVATE Assembly Register Memory Data Command Source 
